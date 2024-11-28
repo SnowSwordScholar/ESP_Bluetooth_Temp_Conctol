@@ -227,12 +227,9 @@ void setup() {
   Serial.println("启动ing");
 
   // 初始化EEPROM
-  if (!EEPROM.begin(EEPROM_SIZE)) {
-    Serial.println("EEPROM初始化失败!");
-    while(1);
-  }
+  EEPROM.begin(EEPROM_SIZE);
 
-  // 检查 EEPROM 是否已初始化（例如，检查第一个温控点时间是否为0或0xFFFF）
+  // 可选：检查 EEPROM 是否已初始化（例如，检查第一个温控点时间是否为0或0xFFFF）
   int firstTime = EEPROM.read(0) | (EEPROM.read(1) << 8);
   if (firstTime == 0xFFFF || firstTime == 0x0000) { // 假设0xFFFF或0x0000表示未初始化
     Serial.println("EEPROM未初始化，进行初始化");
@@ -254,7 +251,7 @@ void setup() {
   digitalWrite(LED_PIN, LOW);
 
   // 初始化BLE
-  BLEDevice::init("ESP32_Temperature_Control"); // 确保名称与Flutter应用匹配
+  BLEDevice::init("ESP32_Temperature_Controll"); // 确保名称与Flutter应用匹配
   BLEServer *pServer = BLEDevice::createServer();
   pServer->setCallbacks(new MyServerCallbacks());
 
