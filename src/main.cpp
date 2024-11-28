@@ -203,6 +203,7 @@ void sendTemperaturePoints() {
     String responseString;
     serializeJson(response, responseString);
     if (responseString.length() <= 600) {
+        delay(300);
         pCharacteristic->setValue(responseString.c_str());
         pCharacteristic->notify();
         Serial.println("已发送温控点数据");
