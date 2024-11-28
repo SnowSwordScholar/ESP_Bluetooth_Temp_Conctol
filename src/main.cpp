@@ -1,4 +1,3 @@
-// ESP32 单片机代码
 #include <Arduino.h>
 #include <BLEDevice.h>
 #include <BLEServer.h>
@@ -23,15 +22,20 @@ const int EEPROM_SIZE = MAX_TEMPERATURE_POINTS * BYTES_PER_POINT;
 BLECharacteristic *pCharacteristic;
 bool deviceConnected = false;
 bool isRunning = false;
+bool hasSentTemperaturePoints = false;
 
 // 前向声明任务函数
 void blinkLEDTask(void * parameter);
+
+// 全局函数声明
+void sendTemperaturePoints();
 
 // 创建BLE服务器回调
 class MyServerCallbacks: public BLEServerCallbacks {
     void onConnect(BLEServer* pServer) override {
       deviceConnected = true;
       Serial.println("设备已连接");
+      hasSentTemperaturePoints = false; // 重置标志位，以便发送温控点
     }
 
     void onDisconnect(BLEServer* pServer) override {
@@ -83,43 +87,6 @@ class MyCallbacks: public BLECharacteristicCallbacks {
           handleInterrupt();
         }
         // 处理其他命令
-      }
-    }
-
-    void sendTemperaturePoints() {
-      // 从EEPROM读取温控点数据
-      DynamicJsonDocument response(2048);
-      response["command"] = "temperature_points";
-      JsonArray data = response.createNestedArray("data");
-
-      Serial.println("读取EEPROM中的温控点数据:");
-      for (int i = 0; i < MAX_TEMPERATURE_POINTS; i++) {
-        int addr = i * BYTES_PER_POINT;
-        byte timeLow = EEPROM.read(addr);
-        byte timeHigh = EEPROM.read(addr + 1);
-        byte tempLow = EEPROM.read(addr + 2);
-        byte tempHigh = EEPROM.read(addr + 3);
-
-        int time = (timeHigh << 8) | timeLow;
-        int temperature = (tempHigh << 8) | tempLow;
-
-        // 仅添加已设置的温控点（时间大于0）
-        if (time > 0) {
-          JsonObject point = data.createNestedObject();
-          point["time"] = time;
-          point["temperature"] = temperature;
-          Serial.printf("温控点 %d - 时间: %d 分钟, 温度: %d°C\n", i + 1, time, temperature);
-        }
-      }
-
-      String responseString;
-      serializeJson(response, responseString);
-      if (responseString.length() <= 600) {
-        pCharacteristic->setValue(responseString.c_str());
-        pCharacteristic->notify();
-        Serial.println("已发送温控点数据");
-      } else {
-        Serial.println("响应数据过大，未发送");
       }
     }
 
@@ -204,101 +171,166 @@ class MyCallbacks: public BLECharacteristicCallbacks {
         Serial.println("响应数据过大，未发送");
       }
     }
-
 };
+
+// 全局函数定义
+void sendTemperaturePoints() {
+    // 从EEPROM读取温控点数据
+    DynamicJsonDocument response(2048);
+    response["command"] = "temperature_points";
+    JsonArray data = response.createNestedArray("data");
+
+    Serial.println("读取EEPROM中的温控点数据:");
+    for (int i = 0; i < MAX_TEMPERATURE_POINTS; i++) {
+        int addr = i * BYTES_PER_POINT;
+        byte timeLow = EEPROM.read(addr);
+        byte timeHigh = EEPROM.read(addr + 1);
+        byte tempLow = EEPROM.read(addr + 2);
+        byte tempHigh = EEPROM.read(addr + 3);
+
+        int time = (timeHigh << 8) | timeLow;
+        int temperature = (tempHigh << 8) | tempLow;
+
+        // 仅添加已设置的温控点（时间大于0）
+        if (time > 0) {
+            JsonObject point = data.createNestedObject();
+            point["time"] = time;
+            point["temperature"] = temperature;
+            Serial.printf("温控点 %d - 时间: %d 分钟, 温度: %d°C\n", i + 1, time, temperature);
+        }
+    }
+
+    String responseString;
+    serializeJson(response, responseString);
+    if (responseString.length() <= 600) {
+        pCharacteristic->setValue(responseString.c_str());
+        pCharacteristic->notify();
+        Serial.println("已发送温控点数据");
+    } else {
+        Serial.println("响应数据过大，未发送");
+    }
+}
 
 // LED闪烁任务函数（自由函数）
 void blinkLEDTask(void * parameter){
-  pinMode(LED_PIN, OUTPUT);
-  Serial.println("LED闪烁任务已启动");
-  while(isRunning){
-    digitalWrite(LED_PIN, HIGH);
-    vTaskDelay(500 / portTICK_PERIOD_MS); // LED亮0.5秒
-    digitalWrite(LED_PIN, LOW);
-    vTaskDelay(9500 / portTICK_PERIOD_MS); // LED灭9.5秒，总共每10秒闪烁一次
-  }
-  digitalWrite(LED_PIN, LOW); // 确保LED关闭
-  Serial.println("LED闪烁任务已停止");
-  vTaskDelete(NULL);
+    pinMode(LED_PIN, OUTPUT);
+    Serial.println("LED闪烁任务已启动");
+    while(isRunning){
+        digitalWrite(LED_PIN, HIGH);
+        delay(500); // LED亮0.5秒
+        digitalWrite(LED_PIN, LOW);
+        Serial.println("LED闪烁");
+        vTaskDelay(9500 / portTICK_PERIOD_MS); // LED灭后等待9.5秒，总共每10秒闪烁一次
+    }
+    digitalWrite(LED_PIN, LOW); // 确保LED关闭
+    Serial.println("LED闪烁任务已停止");
+    vTaskDelete(NULL);
 }
 
 void setup() {
-  Serial.begin(115200);
-  delay(1000);
-  Serial.println("启动ing");
+    Serial.begin(115200);
+    delay(1000);
+    Serial.println("启动ing");
 
-  // 初始化EEPROM
-  EEPROM.begin(EEPROM_SIZE);
+    // 初始化EEPROM
+    EEPROM.begin(EEPROM_SIZE);
 
-  // 可选：检查 EEPROM 是否已初始化（例如，检查第一个温控点时间是否为0或0xFFFF）
-  int firstTime = EEPROM.read(0) | (EEPROM.read(1) << 8);
-  if (firstTime == 0xFFFF || firstTime == 0x0000) { // 假设0xFFFF或0x0000表示未初始化
-    Serial.println("EEPROM未初始化，进行初始化");
-    for (int i = 0; i < MAX_TEMPERATURE_POINTS; i++) {
-      int addr = i * BYTES_PER_POINT;
-      EEPROM.write(addr, 0);       // 时间低字节
-      EEPROM.write(addr + 1, 0);   // 时间高字节
-      EEPROM.write(addr + 2, 0);   // 温度低字节
-      EEPROM.write(addr + 3, 0);   // 温度高字节
+    // 打印EEPROM原始值
+    Serial.println("EEPROM原始数据:");
+    for (int i = 0; i < EEPROM_SIZE; i++) {
+        Serial.printf("0x%02X ", EEPROM.read(i));
+        if ((i + 1) % BYTES_PER_POINT == 0) Serial.println();
     }
-    EEPROM.commit();
-    Serial.println("EEPROM已初始化");
-  } else {
-    Serial.println("EEPROM已包含温控点数据");
-  }
 
-  // 初始化LED引脚
-  pinMode(LED_PIN, OUTPUT);
-  digitalWrite(LED_PIN, LOW);
+    // 打印EEPROM解析后的温控点数据
+    Serial.println("EEPROM解析后的温控点数据:");
+    for (int i = 0; i < MAX_TEMPERATURE_POINTS; i++) {
+        int addr = i * BYTES_PER_POINT;
+        byte timeLow = EEPROM.read(addr);
+        byte timeHigh = EEPROM.read(addr + 1);
+        byte tempLow = EEPROM.read(addr + 2);
+        byte tempHigh = EEPROM.read(addr + 3);
 
-  // 初始化BLE
-  BLEDevice::init("ESP32_Temperature_Controll"); // 确保名称与Flutter应用匹配
-  BLEServer *pServer = BLEDevice::createServer();
-  pServer->setCallbacks(new MyServerCallbacks());
+        int time = (timeHigh << 8) | timeLow;
+        int temperature = (tempHigh << 8) | tempLow;
 
-  BLEService *pService = pServer->createService(SERVICE_UUID);
+        Serial.printf("温控点 %d - 时间: %d 分钟, 温度: %d°C\n", i + 1, time, temperature);
+    }
 
-  pCharacteristic = pService->createCharacteristic(
-                      CHARACTERISTIC_UUID,
-                      BLECharacteristic::PROPERTY_READ |
-                      BLECharacteristic::PROPERTY_WRITE |
-                      BLECharacteristic::PROPERTY_NOTIFY
-                    );
+    // 可选：检查 EEPROM 是否已初始化（例如，检查第一个温控点时间是否为0或0xFFFF）
+    int firstTime = EEPROM.read(0) | (EEPROM.read(1) << 8);
+    if (firstTime == 0xFFFF || firstTime == 0x0000) { // 假设0xFFFF或0x0000表示未初始化
+        Serial.println("EEPROM未初始化，进行初始化");
+        for (int i = 0; i < MAX_TEMPERATURE_POINTS; i++) {
+            int addr = i * BYTES_PER_POINT;
+            EEPROM.write(addr, 0);       // 时间低字节
+            EEPROM.write(addr + 1, 0);   // 时间高字节
+            EEPROM.write(addr + 2, 0);   // 温度低字节
+            EEPROM.write(addr + 3, 0);   // 温度高字节
+        }
+        EEPROM.commit();
+        Serial.println("EEPROM已初始化");
+    } else {
+        Serial.println("EEPROM已包含温控点数据");
+    }
 
-  pCharacteristic->addDescriptor(new BLE2902());
-  pCharacteristic->setCallbacks(new MyCallbacks());
+    // 初始化LED引脚
+    pinMode(LED_PIN, OUTPUT);
+    digitalWrite(LED_PIN, LOW);
 
-  pService->start();
+    // 初始化BLE
+    BLEDevice::init("ESP32_Temperature_Controll"); // 确保名称与Flutter应用匹配
+    BLEServer *pServer = BLEDevice::createServer();
+    pServer->setCallbacks(new MyServerCallbacks());
 
-  BLEAdvertising *pAdvertising = BLEDevice::getAdvertising();
-  pAdvertising->addServiceUUID(SERVICE_UUID);
-  pAdvertising->setScanResponse(false);
-  pAdvertising->setMinPreferred(0x06);  // 有助于iPhone连接
-  pAdvertising->setMinPreferred(0x12);
-  BLEDevice::startAdvertising();
-  Serial.println("等待设备连接...");
+    BLEService *pService = pServer->createService(SERVICE_UUID);
+
+    pCharacteristic = pService->createCharacteristic(
+                        CHARACTERISTIC_UUID,
+                        BLECharacteristic::PROPERTY_READ |
+                        BLECharacteristic::PROPERTY_WRITE |
+                        BLECharacteristic::PROPERTY_NOTIFY
+                      );
+
+    pCharacteristic->addDescriptor(new BLE2902());
+    pCharacteristic->setCallbacks(new MyCallbacks());
+
+    pService->start();
+
+    BLEAdvertising *pAdvertising = BLEDevice::getAdvertising();
+    pAdvertising->addServiceUUID(SERVICE_UUID);
+    pAdvertising->setScanResponse(false);
+    pAdvertising->setMinPreferred(0x06);  // 有助于iPhone连接
+    pAdvertising->setMinPreferred(0x12);
+    BLEDevice::startAdvertising();
+    Serial.println("等待设备连接...");
 }
 
 void loop() {
-  if (deviceConnected) {
-    // 发送实时状态
-    DynamicJsonDocument statusDoc(256);
-    statusDoc["command"] = "current_status";
-    statusDoc["data"]["runtime"] = 120; // 示例数据
-    statusDoc["data"]["current_temperature"] = 25; // 示例数据
-
-    String statusString;
-    serializeJson(statusDoc, statusString);
-    if (statusString.length() <= 600) {
-      pCharacteristic->setValue(statusString.c_str());
-      pCharacteristic->notify();
-      Serial.println("已发送当前状态");
-    } else {
-      Serial.println("状态数据过大，未发送");
+    if (deviceConnected && !hasSentTemperaturePoints) {
+        sendTemperaturePoints();
+        hasSentTemperaturePoints = true;
     }
 
-    delay(30000); // 每30秒发送一次
-  }
+    if (deviceConnected) {
+        // 发送实时状态
+        DynamicJsonDocument statusDoc(256);
+        statusDoc["command"] = "current_status";
+        statusDoc["data"]["runtime"] = 120; // 示例数据
+        statusDoc["data"]["current_temperature"] = 25; // 示例数据
 
-  delay(1000);
+        String statusString;
+        serializeJson(statusDoc, statusString);
+        if (statusString.length() <= 600) {
+            pCharacteristic->setValue(statusString.c_str());
+            pCharacteristic->notify();
+            Serial.println("已发送当前状态");
+        } else {
+            Serial.println("状态数据过大，未发送");
+        }
+
+        delay(30000); // 每30秒发送一次
+    }
+
+    delay(1000);
 }
