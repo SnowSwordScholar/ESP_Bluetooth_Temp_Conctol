@@ -43,6 +43,10 @@ class MyServerCallbacks: public BLEServerCallbacks {
       Serial.println("设备已断开连接");
       isRunning = false; // 停止运行
       digitalWrite(LED_PIN, LOW); // 确保LED关闭
+
+      // 重新启动广告
+      BLEDevice::startAdvertising();
+      Serial.println("重新开始广告，等待设备连接...");
     }
 };
 
@@ -120,6 +124,7 @@ class MyCallbacks: public BLECharacteristicCallbacks {
       String responseString;
       serializeJson(response, responseString);
       if (responseString.length() <= 600) {
+        delay(300); // 确保客户端有足够时间处理数据
         pCharacteristic->setValue(responseString.c_str());
         pCharacteristic->notify();
         Serial.println("温控点验证通过，已发送响应");
@@ -164,6 +169,7 @@ class MyCallbacks: public BLECharacteristicCallbacks {
       String responseString;
       serializeJson(response, responseString);
       if (responseString.length() <= 600) {
+        delay(300); // 确保客户端有足够时间处理数据
         pCharacteristic->setValue(responseString.c_str());
         pCharacteristic->notify();
         Serial.println("已发送运行状态: " + status);
@@ -191,19 +197,21 @@ void sendTemperaturePoints() {
         int time = (timeHigh << 8) | timeLow;
         int temperature = (tempHigh << 8) | tempLow;
 
-        // 仅添加已设置的温控点（时间大于0）
-        if (time > 0) {
+        // 排除时间为0或65535的温控点
+        if (time > 0 && time < 1000) { // 假设时间不会超过1000分钟
             JsonObject point = data.createNestedObject();
             point["time"] = time;
             point["temperature"] = temperature;
             Serial.printf("温控点 %d - 时间: %d 分钟, 温度: %d°C\n", i + 1, time, temperature);
+        } else {
+            Serial.printf("温控点 %d - 未设置或无效的数据，跳过\n", i + 1);
         }
     }
 
     String responseString;
     serializeJson(response, responseString);
     if (responseString.length() <= 600) {
-        delay(300);
+        delay(300); // 确保客户端有足够时间处理数据
         pCharacteristic->setValue(responseString.c_str());
         pCharacteristic->notify();
         Serial.println("已发送温控点数据");
@@ -255,7 +263,12 @@ void setup() {
         int time = (timeHigh << 8) | timeLow;
         int temperature = (tempHigh << 8) | tempLow;
 
-        Serial.printf("温控点 %d - 时间: %d 分钟, 温度: %d°C\n", i + 1, time, temperature);
+        // 排除时间为0或65535的温控点
+        if (time > 0 && time < 1000) { // 假设时间不会超过1000分钟
+            Serial.printf("温控点 %d - 时间: %d 分钟, 温度: %d°C\n", i + 1, time, temperature);
+        } else {
+            Serial.printf("温控点 %d - 未设置或无效的数据，跳过\n", i + 1);
+        }
     }
 
     // 可选：检查 EEPROM 是否已初始化（例如，检查第一个温控点时间是否为0或0xFFFF）
@@ -323,6 +336,7 @@ void loop() {
         String statusString;
         serializeJson(statusDoc, statusString);
         if (statusString.length() <= 600) {
+            delay(300); // 确保客户端有足够时间处理数据
             pCharacteristic->setValue(statusString.c_str());
             pCharacteristic->notify();
             Serial.println("已发送当前状态");
