@@ -14,7 +14,34 @@
 // LED Pin
 const int LED_PIN_D4 = 12; // D4 (IO12)
 const int LED_PIN_D5 = 13;
+
+
+
+// 定义 PWM 相关参数用于呼吸效果
+const int LEDC_CHANNEL_D4 = 0;
+const int LEDC_CHANNEL_D5 = 1;
+const int LEDC_TIMER = 0;
+const int LEDC_FREQ = 5000; // 5kHz
+const int LEDC_RESOLUTION = 8; // 8-bit分辨率
+
+// 定义 LED 状态
+enum LEDState {
+    WAITING_FOR_CONNECTION,
+    CONNECTION_SUCCESS,
+    RECEIVING_SUCCESS,
+    EXECUTING,
+    EXECUTING_WITHOUT_CONECT
+};
+
+// 当前状态，初始为等待连接
+volatile LEDState currentState = WAITING_FOR_CONNECTION;
+
+// 用户按键设置
 const int BOOT_PIN = 9; // 用户按键 (GPIO9)
+unsigned long pressStartTime = 0; // 按下时的时间戳
+bool isPressed = false;           // 按钮是否按下
+bool longPressTriggered = false;  // 是否触发过长按功能
+
 
 // EEPROM设置
 const int MAX_TEMPERATURE_POINTS = 15;
@@ -48,6 +75,10 @@ const int interpolationInterval = 1;
 unsigned long previousMillis = 0; // 保存上次发送状态的时间
 const long interval = 5000; // 发送状态的时间间隔（毫秒）
 
+// 轮询温度设置
+unsigned long tempPreviousMillis = 0; // 保存上次发送状态的时间
+const long tempInterval = 5000; // 更新状态的时间间隔（毫秒）
+
 // 标志位设置
 bool isStart = 0;    // 是否已经启动
 bool isInterpolated = 0; // 当前是否被插值
@@ -60,7 +91,7 @@ bool hasSentTemperaturePoints = false;
 int NowTemp =0;  // 插入的值
 
 // 前向声明任务函数
-void blinkLEDTask(void * parameter);
+void ledTask(void * parameter);
 
 // 全局函数声明
 void sendTemperaturePoints();
@@ -125,18 +156,20 @@ void executeSetting() {
 
 // 重置设定值
 void resetSetting() {
-    memset(newData, 0, sizeof(newData));    //初始化数组为0
-    while (1) {
-        addr = 0;
-        for (int i = 0; i < 100; i++) {
-            for (int j = 0; j < 2; j++) {
-            EEPROM.put(addr, newData[i][j]);
-            addr += sizeof(int);  // 更新地址，每次增加一个int的大小
-            }
-        }
-        EEPROM.commit();  // 确保所有数据都写入到EEPROM
-        return; 
-    }
+  byte value = 0xff;
+  Serial.print("开始重置 EEPROM，设置所有字节为: 0x");
+  Serial.println(value, HEX);
+  
+  for (int addr = 0; addr < EEPROM_SIZE; addr++) {
+    EEPROM.write(addr, value);
+  }
+  
+  // 确保数据写入 EEPROM
+  if (EEPROM.commit()) {
+    Serial.println("EEPROM 重置成功！");
+  } else {
+    Serial.println("EEPROM 重置失败！");
+  }
 }
 
 void tempEvent() {
@@ -277,15 +310,25 @@ class MyServerCallbacks: public BLEServerCallbacks {
     void onConnect(BLEServer* pServer) override {
       deviceConnected = true;
       Serial.println("设备已连接");
+      if(isStart){
+        currentState = EXECUTING;
+      }else{
+        currentState = CONNECTION_SUCCESS;
+      }
+      
       hasSentTemperaturePoints = false; // 重置标志位，以便发送温控点
     }
 
     void onDisconnect(BLEServer* pServer) override {
       deviceConnected = false;
       Serial.println("设备已断开连接");
-      isRunning = false; // 停止运行
-      digitalWrite(LED_PIN_D4, LOW); // 确保LED关闭
-
+      // isRunning = false; // 停止运行
+      if(isRunning){
+        currentState = EXECUTING_WITHOUT_CONECT;
+      }else{
+        currentState = WAITING_FOR_CONNECTION;
+      }
+      
       // 重新启动广告
       BLEDevice::startAdvertising();
       Serial.println("重新开始广告，等待设备连接...");
@@ -383,7 +426,9 @@ class MyCallbacks: public BLECharacteristicCallbacks {
         Serial.println("温控点验证通过，已发送响应");
       } else {
         Serial.println("响应数据过大，未发送");
+        return;
       }
+      currentState = RECEIVING_SUCCESS;
     }
 
     void handleStartRun() {
@@ -392,15 +437,7 @@ class MyCallbacks: public BLECharacteristicCallbacks {
         Serial.println("开始运行");
         sendRunStatus("started");
         // 启动LED闪烁任务
-        xTaskCreatePinnedToCore(
-          blinkLEDTask,         // 任务函数（自由函数）
-          "BlinkLEDTask",      // 任务名称
-          1024,                // 堆栈大小
-          NULL,                // 任务参数
-          1,                   // 优先级
-          NULL,                // 任务句柄
-          1                    // 运行在核心1
-        );
+        currentState = EXECUTING;
       }
       executeSetting();
     }
@@ -410,7 +447,7 @@ class MyCallbacks: public BLECharacteristicCallbacks {
         isRunning = false;
         Serial.println("运行已中断");
         sendRunStatus("interrupted");
-        digitalWrite(LED_PIN_D4, LOW); // 确保LED关闭
+        currentState = CONNECTION_SUCCESS;   //  LED 
         isStart = 0;
       }
     }
@@ -475,22 +512,71 @@ void sendTemperaturePoints() {
     }
 }
 
-// LED闪烁任务函数（自由函数）
-void blinkLEDTask(void * parameter){
-    pinMode(LED_PIN_D4, OUTPUT);
-    Serial.println("LED闪烁任务已启动");
-    while(isRunning){
-        digitalWrite(LED_PIN_D4, HIGH);
-        delay(500); // LED亮0.5秒
-        digitalWrite(LED_PIN_D4, LOW);
-        Serial.println("LED闪烁");
-        vTaskDelay(9500 / portTICK_PERIOD_MS); // LED灭后等待9.5秒，总共每10秒闪烁一次
+// LED 控制任务
+void ledTask(void * parameter) {
+    while (1) {
+        switch(currentState) {
+            case WAITING_FOR_CONNECTION:
+                // 两颗 LED 交替闪烁
+                ledcWrite(LEDC_CHANNEL_D4, 255); // D4 打开
+                ledcWrite(LEDC_CHANNEL_D5, 0);   // D5 关闭
+                vTaskDelay(500 / portTICK_PERIOD_MS);
+                ledcWrite(LEDC_CHANNEL_D4, 0);   // D4 关闭
+                ledcWrite(LEDC_CHANNEL_D5, 255); // D5 打开
+                vTaskDelay(500 / portTICK_PERIOD_MS);
+                break;
+                
+            case CONNECTION_SUCCESS:
+                // 两颗 LED 常亮
+                ledcWrite(LEDC_CHANNEL_D4, 255); // D4 常亮
+                ledcWrite(LEDC_CHANNEL_D5, 255); // D5 常亮
+                vTaskDelay(1000 / portTICK_PERIOD_MS); // 延时避免占用过多 CPU
+                break;
+                
+            case RECEIVING_SUCCESS:
+                // D5 快速闪烁，D4 关闭
+                ledcWrite(LEDC_CHANNEL_D4, 0);   // D4 关闭
+                ledcWrite(LEDC_CHANNEL_D5, 255); // D5 打开
+                vTaskDelay(200 / portTICK_PERIOD_MS);
+                ledcWrite(LEDC_CHANNEL_D5, 0);   // D5 关闭
+                vTaskDelay(200 / portTICK_PERIOD_MS);
+                break;
+                
+            case EXECUTING:
+                // 两颗 LED 交替呼吸
+                for(int brightness = 0; brightness < 200; brightness++) {
+                    ledcWrite(LEDC_CHANNEL_D4, brightness);
+                    ledcWrite(LEDC_CHANNEL_D5, 200 - brightness);
+                    vTaskDelay(10 / portTICK_PERIOD_MS);
+                    // 如果状态改变，跳出循环
+                    if(currentState != EXECUTING) break;
+                }
+                for(int brightness = 200; brightness >= 0; brightness--) {
+                    ledcWrite(LEDC_CHANNEL_D4, brightness);
+                    ledcWrite(LEDC_CHANNEL_D5, 200 - brightness);
+                    vTaskDelay(10 / portTICK_PERIOD_MS);
+                    // 如果状态改变，跳出循环
+                    if(currentState != EXECUTING) break;
+                }
+                break;
+            case EXECUTING_WITHOUT_CONECT:
+                ledcWrite(LEDC_CHANNEL_D4, 0);
+                for(int brightness = 0; brightness < 200; brightness++) {
+                    ledcWrite(LEDC_CHANNEL_D5, 200 - brightness);
+                    vTaskDelay(10 / portTICK_PERIOD_MS);
+                    // 如果状态改变，跳出循环
+                    if(currentState != EXECUTING_WITHOUT_CONECT) break;
+                }
+                for(int brightness = 200; brightness >= 0; brightness--) {
+                    ledcWrite(LEDC_CHANNEL_D5, 200 - brightness);
+                    vTaskDelay(10 / portTICK_PERIOD_MS);
+                    // 如果状态改变，跳出循环
+                    if(currentState != EXECUTING_WITHOUT_CONECT) break;
+                }
+                break;
+        }
     }
-    digitalWrite(LED_PIN_D4, LOW); // 确保LED关闭
-    Serial.println("LED闪烁任务已停止");
-    vTaskDelete(NULL);
 }
-
 void setup() {
     Serial.begin(115200);
     delay(1000);
@@ -543,9 +629,28 @@ void setup() {
         Serial.println("EEPROM已包含温控点数据");
     }
 
-    // 初始化LED引脚
+    // 初始化 LED 引脚
     pinMode(LED_PIN_D4, OUTPUT);
-    digitalWrite(LED_PIN_D4, LOW);
+    pinMode(LED_PIN_D5, OUTPUT);
+
+    pinMode(BOOT_PIN, INPUT_PULLUP); // 设置按键为输入模式，使用内部上拉电阻
+
+    // 设置 PWM 通道用于呼吸效果
+    ledcSetup(LEDC_CHANNEL_D4, LEDC_FREQ, LEDC_RESOLUTION);
+    ledcAttachPin(LED_PIN_D4, LEDC_CHANNEL_D4);
+    
+    ledcSetup(LEDC_CHANNEL_D5, LEDC_FREQ, LEDC_RESOLUTION);
+    ledcAttachPin(LED_PIN_D5, LEDC_CHANNEL_D5);
+    
+    // 创建 LED 控制任务
+    xTaskCreate(
+        ledTask,            // Task 函数
+        "LED Task",        // Task 名称
+        2048,              // Task 栈大小
+        NULL,              // Task 参数
+        1,                 // Task 优先级
+        NULL               // Task 句柄
+    );
 
     // 初始化引脚
     pinMode(KEY1, OUTPUT);
@@ -620,9 +725,51 @@ void loop() {
       previousMillis = currentMillis; // 更新上次发送状态的时间
     }
   }
-  if(isStart){
+
+  if (isStart && (millis()-tempPreviousMillis >= tempInterval)){
       printTime();  // 打印时间
       tempEvent();  // 处理温度事件
+    tempPreviousMillis = millis();
   }
-    delay(1000);
+
+  // 按钮事件
+    int buttonState = digitalRead(BOOT_PIN); // 读取按键状态
+
+  // 如果按钮被按下
+  if (buttonState == LOW) {
+    if (!isPressed) {
+      pressStartTime = millis();  // 记录按下时间
+      isPressed = true;           // 标记为已按下
+    }
+
+    // 检查是否按下超过10秒
+    if (isPressed && millis() - pressStartTime > 10000) {
+      resetSetting();
+      Serial.printf("清除数据，即将重启");
+      currentState = CONNECTION_SUCCESS;
+      delay(3000);
+      esp_restart();
+    }
+
+    // 检查是否按下超过3秒但小于10秒
+    if (isPressed && !longPressTriggered && millis() - pressStartTime > 3000) {
+      currentState = RECEIVING_SUCCESS;
+      longPressTriggered = true; // 标记为已触发长按功能
+    }
+  } else {
+    // 如果按钮释放
+    if (isPressed) {
+      if (millis() - pressStartTime > 3000 && millis() - pressStartTime <= 10000) {
+        Serial.printf("即将执行设定值\n");
+        if(deviceConnected){
+          currentState = EXECUTING;
+        }else{
+          currentState = EXECUTING_WITHOUT_CONECT;
+        }
+        executeSetting();
+      }
+      isPressed = false;          // 重置按下状态
+      longPressTriggered = false; // 重置长按标记
+    }
+  }
 }
