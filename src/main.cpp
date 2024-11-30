@@ -133,6 +133,7 @@ void executeSetting() {
 
             Serial.printf("温控点 %d - 未设置或无效的数据，跳过\n", i + 1);
         }
+        isStart = 1;
     }
 
     // 打印设定值数组
@@ -205,6 +206,7 @@ void tempEvent() {
       lastInterpolationTime = currentTime; // 更新插值时间
       // isInterpolated = 1;
     }
+    currentState = EXECUTING;
   }else if (isStart){
     currentState = COMPLETED ;
   }
@@ -431,6 +433,7 @@ class MyCallbacks: public BLECharacteristicCallbacks {
         Serial.println("响应数据过大，未发送");
         return;
       }
+      isStart = 0;
       currentState = RECEIVING_SUCCESS;
     }
 
