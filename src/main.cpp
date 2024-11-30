@@ -30,7 +30,8 @@ enum LEDState {
     CONNECTION_SUCCESS,
     RECEIVING_SUCCESS,
     EXECUTING,
-    EXECUTING_WITHOUT_CONECT
+    EXECUTING_WITHOUT_CONECT,
+    COMPLETED
 };
 
 // 当前状态，初始为等待连接
@@ -204,6 +205,8 @@ void tempEvent() {
       lastInterpolationTime = currentTime; // 更新插值时间
       // isInterpolated = 1;
     }
+  }else if (isStart){
+    currentState = COMPLETED ;
   }
 }
 
@@ -573,6 +576,14 @@ void ledTask(void * parameter) {
                     // 如果状态改变，跳出循环
                     if(currentState != EXECUTING_WITHOUT_CONECT) break;
                 }
+                break;
+            case COMPLETED:
+                // D5 快速闪烁，D4 关闭
+                ledcWrite(LEDC_CHANNEL_D4, 255); 
+                ledcWrite(LEDC_CHANNEL_D5, 0);
+                vTaskDelay(200 / portTICK_PERIOD_MS);
+                ledcWrite(LEDC_CHANNEL_D4, 0); 
+                vTaskDelay(200 / portTICK_PERIOD_MS);
                 break;
         }
     }
